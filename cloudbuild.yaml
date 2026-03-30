@@ -1,6 +1,6 @@
 steps:
   # 1️⃣ Executa o Scanner (Trivy) 
-  - name: 'aquasec/trivy:latest'
+  - name: 'aquasec/trivy:0.50.1'
     id: 'Scan-Seguranca'
     entrypoint: 'sh'
     args:
