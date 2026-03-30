@@ -42,3 +42,6 @@ steps:
         else
           echo "✅ Código limpo! Nenhuma vulnerabilidade alta/crítica ou chave exposta."
         fi
+
+options:
+  logging: CLOUD_LOGGING_ONLY
