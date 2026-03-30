@@ -1,0 +1,44 @@
+steps:
+  # 1️⃣ Executa o Scanner (Trivy) focado em vulnerabilidades de software E chaves vazadas (secrets)
+  - name: 'aquasec/trivy:latest'
+    id: 'Scan-Seguranca'
+    entrypoint: 'sh'
+    args:
+      - '-c'
+      - |
+        echo "🔍 Iniciando varredura de dependências e chaves (secrets) com Trivy..."
+        
+        # --scanners vuln,secret: Foca em pacotes vulneráveis e senhas/chaves hardcoded
+        trivy fs --format json \
+                 --output /workspace/trivy-results.json \
+                 --severity HIGH,CRITICAL \
+                 --scanners vuln,secret \
+                 --no-progress \
+                 . || true  
+
+  # 2️⃣ Avalia o resultado e publica no Pub/Sub
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    id: 'Avalia-e-Notifica'
+    entrypoint: 'bash'
+    args:
+      - '-c'
+      - |
+        apt-get update && apt-get install -y jq
+
+        echo "📊 Analisando os resultados da varredura..."
+
+        # Verifica se o array "Results" existe
+        HAS_VULN=$(jq -e '.Results | length > 0' /workspace/trivy-results.json > /dev/null && echo "true" || echo "false")
+
+        if [ "$HAS_VULN" = "true" ]; then
+          echo "⚠️ Problemas de segurança (Vulnerabilidades ou Secrets) encontrados!"
+          
+          PAYLOAD=$(cat /workspace/trivy-results.json)
+          
+          # Publica no tópico vulnerability-found
+          gcloud pubsub topics publish vulnerability-found --message="$PAYLOAD"
+          
+          echo "🚀 Relatório enviado ao Pub/Sub com sucesso!"
+        else
+          echo "✅ Código limpo! Nenhuma vulnerabilidade alta/crítica ou chave exposta."
+        fi
