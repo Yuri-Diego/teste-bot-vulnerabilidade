@@ -1,44 +1,91 @@
 steps:
-  # 1️⃣ Executa o Scanner (Trivy) 
+  # 1️⃣ Executa o Trivy (Apenas para Vulnerabilidades de Bibliotecas)
   - name: 'aquasec/trivy:0.50.1'
-    id: 'Scan-Seguranca'
+    id: 'Scan-Trivy'
     entrypoint: 'sh'
     args:
       - '-c'
       - |
-        echo "🔍 Iniciando varredura de dependências e chaves (secrets) com Trivy..."
-        
+        echo "🔍 Iniciando varredura de dependências com Trivy..."
         trivy fs --format json \
                  --output /workspace/trivy-results.json \
                  --severity MEDIUM,HIGH,CRITICAL \
-                 --scanners vuln,secret \
+                 --scanners vuln \
                  --no-progress \
                  . || true  
 
-  # 2️⃣ Avalia o resultado e publica no Pub/Sub
+  # 2️⃣ Executa o Gitleaks (Especialista em Segredos, mais agressivo)
+  - name: 'zricethezav/gitleaks:latest'
+    id: 'Scan-Gitleaks'
+    entrypoint: 'sh'
+    args:
+      - '-c'
+      - |
+        echo "🔍 Iniciando varredura de segredos com Gitleaks..."
+        gitleaks detect --source . --report-format json --report-path /workspace/gitleaks-results.json --no-git || true
+
+  # 3️⃣ Avalia, Mescla os resultados e Publica no Pub/Sub
   - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
     id: 'Avalia-e-Notifica'
     entrypoint: 'bash'
     args:
       - '-c'
       - |
-        apt-get update && apt-get install -y jq
+        echo "📊 Consolidando os resultados das varreduras..."
+        
+        # Usamos um script Python nativo para mesclar os dois JSONs em um formato que o seu Bot 1 entende
+        cat << 'EOF' > /workspace/merge.py
+import json, os
 
-        echo "📊 Analisando os resultados da varredura..."
+trivy_data = {"Results": []}
 
-        HAS_VULN=$$(jq -e '.Results | length > 0' /workspace/trivy-results.json > /dev/null && echo "true" || echo "false")
+# 1. Carrega pacotes velhos do Trivy
+if os.path.exists("/workspace/trivy-results.json"):
+    try: 
+        with open("/workspace/trivy-results.json") as f:
+            data = json.load(f)
+            if data and "Results" in data and data["Results"]:
+                trivy_data["Results"] = data["Results"]
+    except: pass
+    
+# 2. Carrega segredos do Gitleaks e "disfarça" como se fosse do Trivy
+if os.path.exists("/workspace/gitleaks-results.json"):
+    try: 
+        with open("/workspace/gitleaks-results.json") as f:
+            gl_data = json.load(f)
+            for leak in gl_data:
+                trivy_data["Results"].append({
+                    "Target": leak.get("File", "Unknown"),
+                    "Secrets": [{
+                        "Title": leak.get("Description", "Segredo Vazado") + " (Gitleaks)",
+                        "Severity": "CRITICAL"
+                    }]
+                })
+    except: pass
 
-        if [ "$$HAS_VULN" = "true" ]; then
+# 3. Salva o resultado final se houver falhas
+has_vulns = any(r.get("Vulnerabilities") or r.get("Secrets") for r in trivy_data["Results"])
+
+if has_vulns:
+    with open("/workspace/final_payload.json", "w") as f:
+        json.dump(trivy_data, f)
+    print("FAILED")
+else:
+    print("OK")
+EOF
+        
+        # Executa o script Python
+        STATUS=$(python3 /workspace/merge.py)
+        
+        if [ "$STATUS" = "FAILED" ]; then
           echo "⚠️ Problemas de segurança (Vulnerabilidades ou Secrets) encontrados!"
           
-          PAYLOAD=$$(cat /workspace/trivy-results.json)
+          # Publica no tópico vulnerability-found
+          gcloud pubsub topics publish vulnerability-found --message="$(cat /workspace/final_payload.json)"
           
-          # Publica no tópico vulnerability-found (escapando o PAYLOAD)
-          gcloud pubsub topics publish vulnerability-found --message="$$PAYLOAD"
-          
-          echo "🚀 Relatório enviado ao Pub/Sub com sucesso!"
+          echo "🚀 Relatório unificado enviado ao Pub/Sub com sucesso!"
         else
-          echo "✅ Código limpo! Nenhuma vulnerabilidade alta/crítica ou chave exposta."
+          echo "✅ Código limpo! Nenhuma vulnerabilidade ou chave exposta."
         fi
 
 options:
