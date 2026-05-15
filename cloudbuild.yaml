@@ -10,7 +10,7 @@ steps:
         
         trivy fs --format json \
                  --output /workspace/trivy-results.json \
-                 --severity HIGH,CRITICAL \
+                 --severity MEDIUM,HIGH,CRITICAL \
                  --scanners vuln,secret \
                  --no-progress \
                  . || true  
