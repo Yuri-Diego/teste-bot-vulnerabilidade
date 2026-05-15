@@ -33,39 +33,34 @@ steps:
       - |
         echo "📊 Consolidando os resultados das varreduras..."
         
-        # Criando o script Python para merge
         cat << 'EOF' > /workspace/merge.py
         import json, os
-
         trivy_data = {"Results": []}
-
         if os.path.exists("/workspace/trivy-results.json"):
             try:
                 with open("/workspace/trivy-results.json") as f:
                     data = json.load(f)
                     if data and "Results" in data:
                         trivy_data["Results"] = data["Results"]
-            except Exception as e:
-                print(f"Erro Trivy: {e}")
-
+            except: pass
         if os.path.exists("/workspace/gitleaks-results.json"):
             try:
                 with open("/workspace/gitleaks-results.json") as f:
                     gl_data = json.load(f)
-                    if gl_data:
+                    if isinstance(gl_data, list):
                         for leak in gl_data:
                             trivy_data["Results"].append({
                                 "Target": leak.get("File", "Unknown"),
                                 "Secrets": [{
-                                    "Title": leak.get("Description", "Segredo Vazado") + " (Gitleaks)",
+                                    "Title": f"{leak.get('Description', 'Segredo')} encontrado na linha {leak.get('StartLine')}",
                                     "Severity": "CRITICAL"
                                 }]
                             })
             except Exception as e:
-                print(f"Erro Gitleaks: {e}")
-
-        has_vulns = any(r.get("Vulnerabilities") or r.get("Secrets") for r in trivy_data["Results"])
-
+                print(f"DEBUG: Erro ao ler Gitleaks JSON: {e}")
+        
+        has_vulns = any(len(r.get("Vulnerabilities", [])) > 0 or len(r.get("Secrets", [])) > 0 for r in trivy_data["Results"])
+        
         if has_vulns:
             with open("/workspace/final_payload.json", "w") as f:
                 json.dump(trivy_data, f)
@@ -74,13 +69,14 @@ steps:
             print("OK")
         EOF
 
-        # Usamos $$ para que o Cloud Build não confunda com substituições de sistema
-        $$STATUS=$(python3 /workspace/merge.py | tail -n 1)
+        # CORREÇÃO: Sem cifrão nenhum na hora de declarar/atribuir a variável!
+        STATUS_SAIDA=$(python3 /workspace/merge.py | tail -n 1)
         
-        if [ "$$STATUS" = "FAILED" ]; then
+        # Aqui sim usamos $$ para o Cloud Build passar para o Bash como $STATUS_SAIDA
+        if [ "$$STATUS_SAIDA" = "FAILED" ]; then
           echo "⚠️ Problemas de segurança encontrados!"
           gcloud pubsub topics publish vulnerability-found --message="$(cat /workspace/final_payload.json)"
-          echo "🚀 Relatório unificado enviado ao Pub/Sub!"
+          echo "🚀 Relatório unificado enviado ao Pub/Sub com sucesso!"
         else
           echo "✅ Código limpo!"
         fi
