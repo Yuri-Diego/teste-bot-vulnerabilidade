@@ -12,9 +12,9 @@ steps:
                  --severity MEDIUM,HIGH,CRITICAL \
                  --scanners vuln \
                  --no-progress \
-                 . || true  
+                 . || true
 
-  # 2️⃣ Executa o Gitleaks (Especialista em Segredos, mais agressivo)
+  # 2️⃣ Executa o Gitleaks (Especialista em Segredos)
   - name: 'zricethezav/gitleaks:latest'
     id: 'Scan-Gitleaks'
     entrypoint: 'sh'
@@ -33,59 +33,59 @@ steps:
       - |
         echo "📊 Consolidando os resultados das varreduras..."
         
-        # Usamos um script Python nativo para mesclar os dois JSONs em um formato que o seu Bot 1 entende
+        # Criando o script Python para merge
         cat << 'EOF' > /workspace/merge.py
-import json, os
+        import json, os
 
-trivy_data = {"Results": []}
+        trivy_data = {"Results": []}
 
-# 1. Carrega pacotes velhos do Trivy
-if os.path.exists("/workspace/trivy-results.json"):
-    try: 
-        with open("/workspace/trivy-results.json") as f:
-            data = json.load(f)
-            if data and "Results" in data and data["Results"]:
-                trivy_data["Results"] = data["Results"]
-    except: pass
-    
-# 2. Carrega segredos do Gitleaks e "disfarça" como se fosse do Trivy
-if os.path.exists("/workspace/gitleaks-results.json"):
-    try: 
-        with open("/workspace/gitleaks-results.json") as f:
-            gl_data = json.load(f)
-            for leak in gl_data:
-                trivy_data["Results"].append({
-                    "Target": leak.get("File", "Unknown"),
-                    "Secrets": [{
-                        "Title": leak.get("Description", "Segredo Vazado") + " (Gitleaks)",
-                        "Severity": "CRITICAL"
-                    }]
-                })
-    except: pass
+        # 1. Carrega pacotes do Trivy
+        if os.path.exists("/workspace/trivy-results.json"):
+            try:
+                with open("/workspace/trivy-results.json") as f:
+                    data = json.load(f)
+                    if data and "Results" in data:
+                        trivy_data["Results"] = data["Results"]
+            except Exception as e:
+                print(f"Erro Trivy: {e}")
 
-# 3. Salva o resultado final se houver falhas
-has_vulns = any(r.get("Vulnerabilities") or r.get("Secrets") for r in trivy_data["Results"])
+        # 2. Carrega segredos do Gitleaks
+        if os.path.exists("/workspace/gitleaks-results.json"):
+            try:
+                with open("/workspace/gitleaks-results.json") as f:
+                    gl_data = json.load(f)
+                    if gl_data:
+                        for leak in gl_data:
+                            trivy_data["Results"].append({
+                                "Target": leak.get("File", "Unknown"),
+                                "Secrets": [{
+                                    "Title": leak.get("Description", "Segredo Vazado") + " (Gitleaks)",
+                                    "Severity": "CRITICAL"
+                                }]
+                            })
+            except Exception as e:
+                print(f"Erro Gitleaks: {e}")
 
-if has_vulns:
-    with open("/workspace/final_payload.json", "w") as f:
-        json.dump(trivy_data, f)
-    print("FAILED")
-else:
-    print("OK")
-EOF
-        
+        # 3. Avalia se deve falhar
+        has_vulns = any(r.get("Vulnerabilities") or r.get("Secrets") for r in trivy_data["Results"])
+
+        if has_vulns:
+            with open("/workspace/final_payload.json", "w") as f:
+                json.dump(trivy_data, f)
+            print("FAILED")
+        else:
+            print("OK")
+        EOF
+
         # Executa o script Python
-        STATUS=$(python3 /workspace/merge.py)
+        STATUS=$(python3 /workspace/merge.py | tail -n 1)
         
         if [ "$STATUS" = "FAILED" ]; then
-          echo "⚠️ Problemas de segurança (Vulnerabilidades ou Secrets) encontrados!"
-          
-          # Publica no tópico vulnerability-found
+          echo "⚠️ Problemas de segurança encontrados!"
           gcloud pubsub topics publish vulnerability-found --message="$(cat /workspace/final_payload.json)"
-          
-          echo "🚀 Relatório unificado enviado ao Pub/Sub com sucesso!"
+          echo "🚀 Relatório unificado enviado ao Pub/Sub!"
         else
-          echo "✅ Código limpo! Nenhuma vulnerabilidade ou chave exposta."
+          echo "✅ Código limpo!"
         fi
 
 options:
