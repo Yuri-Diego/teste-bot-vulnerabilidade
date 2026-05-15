@@ -36,6 +36,7 @@ steps:
         cat << 'EOF' > /workspace/merge.py
         import json, os
         trivy_data = {"Results": []}
+        
         if os.path.exists("/workspace/trivy-results.json"):
             try:
                 with open("/workspace/trivy-results.json") as f:
@@ -43,6 +44,7 @@ steps:
                     if data and "Results" in data:
                         trivy_data["Results"] = data["Results"]
             except: pass
+            
         if os.path.exists("/workspace/gitleaks-results.json"):
             try:
                 with open("/workspace/gitleaks-results.json") as f:
@@ -61,19 +63,21 @@ steps:
         
         has_vulns = any(len(r.get("Vulnerabilities", [])) > 0 or len(r.get("Secrets", [])) > 0 for r in trivy_data["Results"])
         
-        if has_vulns:
-            with open("/workspace/final_payload.json", "w") as f:
-                json.dump(trivy_data, f)
-            print("FAILED")
-        else:
-            print("OK")
+        # Aqui está o truque ninja: o Python salva a resposta num arquivo txt
+        with open("/workspace/status.txt", "w") as f_status:
+            if has_vulns:
+                with open("/workspace/final_payload.json", "w") as f:
+                    json.dump(trivy_data, f)
+                f_status.write("FAILED")
+            else:
+                f_status.write("OK")
         EOF
 
-        # CORREÇÃO: Sem cifrão nenhum na hora de declarar/atribuir a variável!
-        STATUS_SAIDA=$(python3 /workspace/merge.py | tail -n 1)
+        # Executa o script silenciosamente
+        python3 /workspace/merge.py
         
-        # Aqui sim usamos $$ para o Cloud Build passar para o Bash como $STATUS_SAIDA
-        if [ "$$STATUS_SAIDA" = "FAILED" ]; then
+        # O Bash lê o arquivo. Adeus variáveis com $, adeus erro de substituição!
+        if grep -q "FAILED" /workspace/status.txt; then
           echo "⚠️ Problemas de segurança encontrados!"
           gcloud pubsub topics publish vulnerability-found --message="$(cat /workspace/final_payload.json)"
           echo "🚀 Relatório unificado enviado ao Pub/Sub com sucesso!"
